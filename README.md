@@ -9,118 +9,223 @@ buried, trapped, or out of sight. KHOJ isn't. It doesn't look for victims; it
 listens for the one signal a trapped person can't stop sending: their phone's
 radio. Several agents share signal-strength samples over their own mesh and
 **cooperatively climb the gradient to a phone none of them can see** — something
-no single drone can do. A real GPS drone flies the confirmation. Kill any agent
-and its work is re-auctioned in seconds, with no leader and no central computer.
+no single drone can do. Kill any agent and its work is re-auctioned in seconds,
+with no leader and no central computer.
 
 > **Pitch line:** *Other swarms search together. KHOJ finds the invisible.*
 
-The hero demo: **a judge hides their own phone; the swarm points to it within a
-metre or two, having never seen it.**
+---
+
+## Status — what actually runs on hardware
+
+Five ESP32 boards, verified on the bench.
+
+| Capability | Status | Measured |
+|---|---|---|
+| ESP-NOW mesh, 5 boards | ✅ working | **0.0% packet loss** (from sequence-number gaps) |
+| Peer table + heartbeat | ✅ working | 5 Hz, 23-byte `quorum_msg_t` |
+| Failure detection | ✅ working | **< 2 s**, reached independently by every board |
+| Position over USB, shared on the mesh | ✅ working | every board tracks every peer's coordinates |
+| Cooperative RF localization | ✅ working | **converges to ~0.3 grid cells** |
+| USB message contract, both directions | ✅ byte-verified | 28 B down / 17 B up |
+| Python swarm core vs lawnmower baseline | ✅ working | 4–5 of 5 survivors vs 3–4, RF victim every run |
+
+**Not yet done:** on-device auction (still the Python reference), belief-map
+priors, integration with the full laptop simulator, real-drone flight.
+
+### What is real and what is simulated
+
+Draw this line yourself before a judge draws it for you.
+
+**Real** — the decision logic running on five separate microcontrollers · the
+ESP-NOW radio link · failure detection and independent recovery · per-agent
+signal-strength capture · the USB wire contract.
+
+**Simulated** — drone motion (the boards decide, they do not fly) · terrain ·
+and, in the current demo, the RSSI values themselves.
+
+The firmware prints `simulated` or `measured` on every RF line so the two can
+never be confused. This is **hardware-in-the-loop**, standard practice — PX4
+ships a HITL mode. An ESP-class board is what bolts to a real airframe; its job
+is to *decide*, not to move.
 
 ---
 
-## The one idea that makes it all click
+## The one idea that makes it click
 
 Two worlds run at once:
 
-- **The real world** lives on the laptop (and, for the real drone, on its RPi):
-  where victims actually are, the terrain, the hidden phone. Agents never see
-  this answer key.
+- **The real world** lives on the laptop: where victims actually are, the
+  terrain, the hidden phone. Agents never see this answer key.
 - **Each agent's belief** lives inside its ESP32: its own private guess, built
-  only from what it has personally sensed.
+  only from what it has personally sensed and what peers have broadcast.
 
-The laptop is the *universe*; the ESP32s are *minds* moving through it. Minds
-only get sensor readings and must figure out the rest themselves. That
+The laptop is the *universe*; the ESP32s are *minds* moving through it. That
 separation is the whole reason it's a real swarm and not a puppet show — and the
 clean answer to "is the laptop secretly in charge?" is **no**.
 
-## The novelty, in one line
-
-The swarm bids in **information gain**, not area. Searching empty ground, taking
-a second look at an uncertain sighting, and triangulating an invisible phone all
-become the *same decision* — "where will my next move most reduce what the swarm
-doesn't yet know?" Cooperative RF localization is the headline proof of it.
+**The novelty:** the swarm bids in **information gain**, not area. Searching
+empty ground, taking a second look at an uncertain sighting, and triangulating
+an invisible phone all become the *same decision* — "where will my next move
+most reduce what the swarm doesn't yet know?"
 
 ---
 
-## Who owns what
-
-| Owner | Track | First 6 hours |
-|---|---|---|
-| **A (firmware lead)** | ESP-NOW mesh, the auction/consensus, the agent loop, the on-drone ESP32. Owns `quorum_proto.h`. | Flash Module 1 (the wire) on the one board; get the echo test green. |
-| **B (sim / algorithm)** | Laptop "World": 2D physics, the **RF propagation model** (simulated RSSI vs. distance to the hidden phone), the information-gain bid math, lawnmower **baseline + metrics**. | Stand up the sim loop + dashboard skeleton with 3 fake drones and a score. No hardware needed. |
-| **C (drone)** | F450 + Pixhawk + RPi + **MAVSDK** waypoint flight, onboard camera detection, onboard sniffer → real RSSI → onboard ESP32. Owns the grid↔GPS mapping. | Assemble, arm, GPS lock outdoors, fly to one test waypoint via MAVSDK. |
-| **D (RF + dashboard + pitch)** | Promiscuous-WiFi **RSSI sniffer** firmware, the hideable **"victim beacon"** rig, the dashboard (RF field heatmap + drones converging + the "found it" moment), rubric + pitch. | Get one board reporting phone MAC + RSSI over UART; prep a reliable beacon. |
-
-Everyone meets at the two message formats in `quorum_proto.h`. **Nobody changes
-the treaty without telling the other three.**
-
----
-
-## Architecture
+## Repo layout
 
 ```
-LAPTOP = "the world"           REAL DRONE (one agent, embodied)
- physics · RF sim · YOLO         F450 + Pixhawk (flies)
- dashboard · baseline            RPi: MAVSDK + camera + sniffer  <- plays "World" for real
-      │  USB (per-agent            │  UART
-      │  sensor packet down,       │
-      │  goal up)                  ESP32 (same agent firmware)
-  ┌───┴───┬───────┬───────┐        │
-ESP-1   ESP-2   ESP-3   ...  ──ESP-NOW──┘     ESP-S (RF sniffer, UART only)
-        bids · awards · heartbeats · RF samples
+firmware/
+  platformio.ini             build config — PINNED to arduino-esp32 core 3.x (see below)
+  flash_all.ps1              flash every connected board, print a pass/fail table
+  include/khoj_ids.h         MAC -> agent id table; one binary runs on all boards
+  lib/quorum_proto/          THE TREATY: shared wire structs (mirrored in sim/protocol.py)
+  src/mesh/main.cpp          the live firmware: mesh + peer table + failure detection + RF
+  src/agent/main.cpp         Module 1 wire test (kept for reference)
+sim/
+  protocol.py                Python mirror of quorum_proto.h
+  feeder.py                  position feeder — plays "the world" for the boards
+  world.py  swarm.py  run_sim.py    the Python swarm core + lawnmower baseline
+  wire_test.py               Module 1 laptop side
+docs/
+  mesh_bringup.md            ESP-NOW bringup spec
+  ppt/                       pitch deck + diagram generators
+HANDOFF.md                   full project reasoning and decisions — read this first
 ```
 
-- **ESP-NOW** = agents negotiating with each other. **USB/UART** = an agent
-  talking to its physics engine (laptop or RPi). They never mix.
-- The real drone is a **drop-in body swap** for one agent: the ESP firmware is
-  identical; only its "World" changes from the laptop to the RPi.
-
 ---
 
-## Build order (each module testable before the next)
+## Running it
 
-1. **The wire** ✅ *(this repo)* — USB contract works both ways on one board.
-2. **Skeleton world** *(B)* — sim moves fake drones, finds a victim, scores vs. baseline. Ugly, end-to-end, demoable early.
-3. **The mesh** — two ESP32s exchanging messages over ESP-NOW.
-4. **The auction** — agents decide; rip out any laptop shortcut. Info-gain bids.
-5. **Cooperative RF localization** — agents share RF samples, climb the gradient.
-6. **Resilience** — heartbeat timeout → re-auction (the power-yank beat).
-7. **RF sniffer** → CONFIRM_RF tasks (the hidden-phone hero beat).
-8. **F450 integration** — real drone joins as a live member (hour-24 checkpoint).
+### 1. Flash the boards
 
-Hedge: build the whole swarm in sim first (1–6). The real drone plugs in on top
-of a working system, never underneath a broken one.
-
----
-
-## Module 1 — how to test "the wire"
-
-You need: one ESP32, a USB cable, [PlatformIO](https://platformio.org/) (or
-Arduino IDE — see note), and Python 3.
-
-**Flash the board:**
 ```bash
 cd firmware
-pio run -e agent -t upload
+powershell -ExecutionPolicy Bypass -File .\flash_all.ps1
 ```
 
-**Run the laptop side (in another terminal — not the pio monitor, it needs the
-port to itself):**
+Finds every connected board, builds once, flashes each, and prints a pass/fail
+table. **A silently failed flash looks exactly like a working board** until it
+misbehaves — hence the table.
+
+First time on a new set of boards: flash with `khoj_ids.h`'s table empty, let
+each board print its `ROSTER` block over serial, paste those lines into the
+table with unique ids, and reflash. Each board then derives its own id from its
+MAC, so one binary serves every board.
+
+### 2. Give the boards positions and run the RF demo
+
 ```bash
 cd sim
-pip install -r requirements.txt
-python wire_test.py
+py feeder.py                                   # auto-detect every board
+py feeder.py --ports COM3 COM13 COM14 COM16    # feed the agents, not the beacon
+py feeder.py --phone 8 28                      # move the hidden transmitter
 ```
 
-**Success:** the onboard LED blinks at ~1 Hz, and the terminal streams `GOAL ...`
-lines whose coordinates track what we send, with `sent` and `goals_back` rising
-together. Every ~20th line flips to `REOBSERVE` (that's the fake "detection"
-round-tripping through the ESP's trivial decision). That means the byte contract
-and framing are proven on real hardware, and every later module is safe to build
-on top.
+The feeder streams each board its private sensor packet, reads back the goal
+that board chose, and moves its simulated body. Watch `nearest drone` fall
+toward zero.
 
-> **Arduino IDE instead of PlatformIO?** Copy `firmware/lib/quorum_proto/quorum_proto.h`
-> next to a `.ino` containing the code from `firmware/src/agent/main.cpp`, select
-> your ESP32 board, and upload. PlatformIO is recommended once we have two
-> firmware targets (agent + sniffer).
+### 3. Watch a board
+
+```bash
+cd firmware
+py -m platformio device monitor --monitor-port COM16 -b 115200
+```
+
+```
+STATS id=2 pos=(18.3,21.4) sensors=412 alive=4 peers:  [id=1 UP (12.4,19.8) loss=0.0% rssi=-31 age=190ms] ...
+  RF  SOURCE EST (21.8,23.6) @ -34 dBm from 4 shared sample(s) | my rssi -41 dBm [simulated]
+```
+
+### 4. Python swarm vs baseline (no hardware needed)
+
+```bash
+cd sim
+py run_sim.py --seed 7
+```
+
+---
+
+## How the RF localization works
+
+**Gradient-seeking, not trilateration.** It never needs to know absolute
+distance — only whether the signal is stronger here or there. No path-loss
+calibration, no geometry requirement, no matrix solve on the chip.
+
+1. Each agent measures signal strength and broadcasts `RF_SAMPLE (x, y, rssi)`.
+2. Every agent pools the shared samples and takes **the position of the
+   strongest reading** as the swarm's current guess.
+3. Each agent moves toward it, fanned sideways by its id so they sample fresh
+   ground instead of retracing one another.
+4. Any stronger reading moves the guess. Repeat.
+
+**Why the guess is a measured point and not a computed centroid:** a
+signal-weighted centroid of the *agents' own positions* makes the estimate
+depend on where they chose to fly, which makes it depend on itself. Send
+everyone to it and they collapse onto one spot, killing the spatial spread that
+carries the information. Ring them around it and any asymmetry in the ring
+offsets the estimate a fixed amount every cycle and it accelerates off the map.
+Both were observed on hardware. A least-squares gradient fit avoids the feedback
+but overshoots and oscillates near the source. Hill-climbing on the strongest
+measured sample converges to ~1 cell in simulation from clustered, spread,
+far-corner and opposite-corner starts — and to ~0.3 cells on real boards.
+
+> `sim/swarm.py` still uses the signal-weighted centroid, which works there
+> because agents keep exploring the whole map. The two need reconciling.
+
+---
+
+## The message contract
+
+`firmware/lib/quorum_proto/quorum_proto.h`, mirrored byte-for-byte in
+`sim/protocol.py`. Little-endian, packed structs.
+
+- **Serial framing** (USB, both ways): `[0xAA][0x55][len][payload][xor]`
+- **ESP-NOW** `quorum_msg_t` — 23 B. Types: `HEARTBEAT`, `BID`, `AWARD`,
+  `TASK_SPAWN`, `RF_SAMPLE`
+- **USB down** `usb_sensor_t` — 28 B, the private per-agent sensor packet
+- **USB up** `usb_goal_t` — 17 B, the decision
+
+**Never change one side without the other in the same commit.** Two divergent
+protocol files is the single most likely silent demo-killer, and this contract
+is the only seam between the firmware and laptop stacks.
+
+`sim/feeder.py` is a working reference implementation of the laptop half — the
+full simulator can drop in behind the same bytes with no firmware change.
+
+---
+
+## Toolchain notes (Windows)
+
+These cost real time; they are written down so they cost it only once.
+
+- **arduino-esp32 core 3.x is a hard requirement.** Official PlatformIO stops at
+  core 2.0.17, whose ESP-NOW receive callback gives you `(mac, data, len)` and
+  **no signal strength** — which makes the entire RF concept impossible. The
+  build is pinned to the pioarduino fork. Every board prints `rx_rssi=YES` or
+  `NO-core2.x` at boot; if you ever see the latter, the pin was reverted.
+- **`PYTHONUTF8=1` is required** or PlatformIO dies mid-flash with
+  `UnicodeEncodeError: 'charmap' codec`. `flash_all.ps1` sets it.
+- Some boards need the **BOOT button held** during upload
+  (`Wrong boot mode detected (0x13)`).
+- **COM port numbers renumber on replug.** Never reuse a remembered port; let
+  `feeder.py` auto-detect, or re-run `pio device list`.
+- Charge-only USB cables power a flashed board fine but never enumerate as a
+  COM port — useful for the beacon, useless for flashing.
+- DTR/RTS drive the ESP32 reset circuit, and a CH9102 bridge behaves differently
+  from a CP210x. `feeder.py` parks both lines low so it never resets a board
+  just by opening its port.
+
+---
+
+## Next
+
+1. **Integration** — replace `feeder.py` with the full laptop simulator. Same
+   bytes, no firmware change.
+2. **On-device auction** — port the bid function and belief grid from
+   `sim/swarm.py` to C.
+3. **Belief-map priors** — closes the known "not yet faster to first survivor"
+   gap against the baseline.
+4. **Reconcile** the firmware's RF rule with `sim/swarm.py`'s centroid.
+
+See `HANDOFF.md` for the full reasoning, the auction design, and the demo plan.

@@ -214,6 +214,14 @@ recovery is emergent, not scripted.
   *for free* through the normal ESP-NOW receive callback (`info->rx_ctrl->rssi`) — **no
   promiscuous mode needed**, so the ESP-NOW-vs-promiscuous conflict disappears. Agents
   tag each reading with their position and broadcast `RF_SAMPLE`.
+- **TOOLCHAIN TRAP (verified on hardware toolchain 2026-08-20):** that free RSSI exists
+  **only on arduino-esp32 core 3.x**. Official PlatformIO's core stops at **2.0.17**, whose
+  ESP-NOW receive callback is `(mac, data, len)` — no `rx_ctrl`, no RSSI, so the whole
+  cooperative gradient is impossible on it. `firmware/platformio.ini` is therefore pinned to
+  the **pioarduino** fork (builds as core 3.3.11 / ESP-IDF 5.5.5). A dedicated sniffer board
+  does NOT rescue this: the gradient needs *each agent* sampling at *its own* position.
+  Every board prints `rx_rssi=YES` or `rx_rssi=NO-core2.x` at boot — if you ever see the
+  latter, the platform pin got reverted and P5 is dead until you restore it.
 - **Only** for detecting a *real, unknown* phone's probe requests do you need a
   dedicated promiscuous-mode sniffer board (which cannot also run ESP-NOW — hence
   dedicated). That's an optional credibility stretch. For the demo, use the beacon

@@ -19,3 +19,9 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# generated deck renders (regenerate with make_diagrams.py + svg_to_png.ps1)
+docs/ppt/*.render.html
+
+# Office lock files (created while a doc is open)
+~$*
